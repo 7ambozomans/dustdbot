@@ -1,234 +1,287 @@
-import os
-import json
+import sqlite3
 import asyncio
-import uuid
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
-    MessageHandler,
     ContextTypes,
+    MessageHandler,
     filters
 )
 
-TOKEN = os.environ["BOT_TOKEN"]
-OWNER_ID = 5696379479
-DATA_FILE = "data.json"
+# ======================
+# الإعدادات
+# ======================
 
-# ------------------ قاعدة البيانات ------------------
+TOKEN = "حط_توكن_البوت"
+ADMIN_ID = 123456789
 
-def load_data():
-    if not os.path.exists(DATA_FILE):
-        return {
-            "users": {},
-            "media": {},
-            "links": {},
-            "forced_channels": [],
-            "delete_time": 60,
-            "after_message": "شكراً لاستخدام البوت ❤️",
-            "star_price": 1,
-            "ref_reward": 5
-        }
+FORCE_CHANNELS = ["@اسم_قناتك"]
+DELETE_AFTER = 60
+REFERRAL_REWARD = 10
 
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+# ======================
+# قاعدة البيانات
+# ======================
 
-def save_data():
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(db, f, ensure_ascii=False, indent=4)
+conn = sqlite3.connect("bot.db", check_same_thread=False)
+db = conn.cursor()
 
-db = load_data()
+db.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    stars INTEGER DEFAULT 0
+)
+""")
 
-# ------------------ المستخدم ------------------
+db.execute("""
+CREATE TABLE IF NOT EXISTS media (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id TEXT,
+    media_type TEXT,
+    price INTEGER
+)
+""")
 
-def ensure_user(user_id):
-    uid = str(user_id)
-    if uid not in db["users"]:
-        db["users"][uid] = {
-            "stars": 0,
-            "purchases": []
-        }
-        save_data()
+conn.commit()
 
-# ------------------ القوائم ------------------
+# ======================
+# أدوات مساعدة
+# ======================
 
-def main_menu(user_id):
-    buttons = [
-        [InlineKeyboardButton("🛍️ متجر المقاطع", callback_data="store")],
-        [InlineKeyboardButton("⭐ شحن النجوم", callback_data="charge")],
-        [InlineKeyboardButton("🎁 كسب نجوم", callback_data="earn")],
-        [InlineKeyboardButton("📦 طلباتي", callback_data="orders")]
-    ]
+async def check_subscription(bot, user_id):
+    for channel in FORCE_CHANNELS:
+        try:
+            member = await bot.get_chat_member(channel, user_id)
+            if member.status == "left":
+                return False
+        except:
+            return False
+    return True
 
-    if user_id == OWNER_ID:
-        buttons.append(
-            [InlineKeyboardButton("⚙️ لوحة المطور", callback_data="admin")]
-        )
 
-    return InlineKeyboardMarkup(buttons)
+def add_user(user_id):
+    db.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
+    conn.commit()
 
-def admin_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ إضافة مقطع", callback_data="add_media")],
-        [InlineKeyboardButton("📢 القنوات الإجبارية", callback_data="channels")],
-        [InlineKeyboardButton("⏳ مدة الحذف", callback_data="delete_time")],
-        [InlineKeyboardButton("✉️ رسالة بعد الإرسال", callback_data="after_msg")],
-        [InlineKeyboardButton("⭐ سعر النجوم", callback_data="star_price")]
-    ])
 
-# ------------------ /start ------------------
+def get_stars(user_id):
+    result = db.execute(
+        "SELECT stars FROM users WHERE user_id=?",
+        (user_id,)
+    ).fetchone()
+
+    return result[0] if result else 0
+
+
+def add_stars(user_id, amount):
+    db.execute(
+        "UPDATE users SET stars = stars + ? WHERE user_id=?",
+        (amount, user_id)
+    )
+    conn.commit()
+
+
+# ======================
+# /start
+# ======================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    ensure_user(user.id)
+    user_id = update.effective_user.id
+    add_user(user_id)
 
-    if context.args:
-        ref = context.args[0]
-        if ref.startswith("ref_"):
-            inviter = ref.replace("ref_", "")
-            if inviter != str(user.id):
-                ensure_user(inviter)
-                db["users"][inviter]["stars"] += db["ref_reward"]
-                save_data()
+    if not await check_subscription(context.bot, user_id):
+        await update.message.reply_text(
+            "اشترك بالقناة أولاً ثم أعد /start"
+        )
+        return
 
-    stars = db["users"][str(user.id)]["stars"]
+    keyboard = [
+        [InlineKeyboardButton("🛒 المتجر", callback_data="store")],
+        [InlineKeyboardButton("⭐ رصيدي", callback_data="balance")],
+        [InlineKeyboardButton("🎁 كسب نجوم", callback_data="earn")]
+    ]
 
     await update.message.reply_text(
-        f"✨ أهلاً بك\n\nرصيدك: {stars} ⭐",
-        reply_markup=main_menu(user.id)
+        "أهلاً بك في المتجر",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# ------------------ الأزرار ------------------
+# ======================
+# عرض المتجر
+# ======================
 
-async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def store(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    uid = query.from_user.id
+    items = db.execute("SELECT id, price FROM media").fetchall()
 
-    if query.data == "store":
-        if not db["media"]:
-            await query.message.reply_text("لا يوجد مقاطع حالياً")
-            return
+    if not items:
+        await query.message.reply_text("لا يوجد مقاطع حالياً")
+        return
 
-        for mid, item in db["media"].items():
-            txt = f"🎬 {item['name']}\n⭐ السعر: {item['price']}"
-            btn = InlineKeyboardMarkup([
-                [InlineKeyboardButton("شراء", callback_data=f"buy_{mid}")]
-            ])
-            await query.message.reply_text(txt, reply_markup=btn)
+    buttons = []
 
-    elif query.data.startswith("buy_"):
-        mid = query.data.replace("buy_", "")
-        media = db["media"][mid]
+    for item in items:
+        buttons.append([
+            InlineKeyboardButton(
+                f"شراء #{item[0]} ⭐{item[1]}",
+                callback_data=f"buy_{item[0]}"
+            )
+        ])
 
-        ensure_user(uid)
+    await query.message.reply_text(
+        "المتجر:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
 
-        if db["users"][str(uid)]["stars"] < media["price"]:
-            await query.message.reply_text("رصيدك غير كافٍ")
-            return
+# ======================
+# شراء
+# ======================
 
-        db["users"][str(uid)]["stars"] -= media["price"]
-        save_data()
+async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
-        sent = await query.message.reply_text(
-            f"تم شراء: {media['name']}"
-        )
+    user_id = query.from_user.id
+    media_id = int(query.data.split("_")[1])
 
-        await asyncio.sleep(db["delete_time"])
-        await sent.delete()
+    stars = get_stars(user_id)
 
-    elif query.data == "earn":
-        link = f"https://t.me/fddfdfdfdbot?start=ref_{uid}"
+    media = db.execute(
+        "SELECT file_id, media_type, price FROM media WHERE id=?",
+        (media_id,)
+    ).fetchone()
 
-        await query.message.reply_text(
-            f"🎁 رابط دعوتك:\n{link}"
-        )
+    if not media:
+        await query.message.reply_text("المقطع غير موجود")
+        return
 
-    elif query.data == "charge":
-        await query.message.reply_text(
-            f"⭐ سعر النجمة: {db['star_price']}"
-        )
+    file_id, media_type, price = media
 
-    elif query.data == "orders":
-        await query.message.reply_text("طلباتك محفوظة")
+    if stars < price:
+        await query.message.reply_text("رصيدك غير كافي")
+        return
 
-    elif query.data == "admin" and uid == OWNER_ID:
-        await query.message.reply_text(
-            "⚙️ لوحة المطور",
-            reply_markup=admin_menu()
-        )
+    db.execute(
+        "UPDATE users SET stars = stars - ? WHERE user_id=?",
+        (price, user_id)
+    )
+    conn.commit()
 
-    elif query.data == "add_media":
-        context.user_data["await_media"] = True
-        await query.message.reply_text(
-            "أرسل الآن المقطع مع الاسم بالشكل:\nاسم المقطع|السعر"
-        )
+    if media_type == "video":
+        msg = await query.message.reply_video(file_id)
+    elif media_type == "photo":
+        msg = await query.message.reply_photo(file_id)
+    else:
+        msg = await query.message.reply_audio(file_id)
 
-# ------------------ استقبال المقاطع ------------------
+    await query.message.reply_text("تم الإرسال وسيُحذف تلقائياً")
+
+    await asyncio.sleep(DELETE_AFTER)
+    await msg.delete()
+
+# ======================
+# الرصيد
+# ======================
+
+async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    stars = get_stars(query.from_user.id)
+
+    await query.message.reply_text(f"رصيدك: ⭐ {stars}")
+
+# ======================
+# الربح
+# ======================
+
+async def earn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    link = f"https://t.me/{context.bot.username}?start={user_id}"
+
+    await query.message.reply_text(
+        f"شارك رابطك واربح:\n{link}"
+    )
+
+# ======================
+# إضافة وسائط (للمطور)
+# ======================
+
+waiting_price = {}
+
+async def addmedia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    if len(context.args) != 1:
+        await update.message.reply_text("/addmedia السعر")
+        return
+
+    waiting_price[update.effective_user.id] = int(context.args[0])
+
+    await update.message.reply_text(
+        "أرسل الآن الفيديو أو الصورة"
+    )
 
 async def receive_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("await_media"):
+    user_id = update.effective_user.id
+
+    if user_id != ADMIN_ID or user_id not in waiting_price:
         return
 
-    if not update.message.caption:
-        await update.message.reply_text("اكتب الاسم والسعر في الكابشن")
-        return
-
-    try:
-        name, price = update.message.caption.split("|")
-        price = int(price)
-    except:
-        await update.message.reply_text("الصيغة: الاسم|السعر")
-        return
-
-    media_id = str(uuid.uuid4())
-
-    file_id = None
-    media_type = None
+    price = waiting_price[user_id]
 
     if update.message.video:
         file_id = update.message.video.file_id
         media_type = "video"
-
     elif update.message.photo:
         file_id = update.message.photo[-1].file_id
         media_type = "photo"
-
-    elif update.message.voice:
-        file_id = update.message.voice.file_id
-        media_type = "voice"
-
-    if not file_id:
+    elif update.message.audio:
+        file_id = update.message.audio.file_id
+        media_type = "audio"
+    else:
         await update.message.reply_text("نوع غير مدعوم")
         return
 
-    db["media"][media_id] = {
-        "name": name,
-        "price": price,
-        "file_id": file_id,
-        "type": media_type
-    }
+    db.execute(
+        "INSERT INTO media (file_id, media_type, price) VALUES (?, ?, ?)",
+        (file_id, media_type, price)
+    )
 
-    save_data()
-    context.user_data["await_media"] = False
+    conn.commit()
 
-    await update.message.reply_text("تمت إضافة المقطع ✅")
+    del waiting_price[user_id]
 
-# ------------------ تشغيل ------------------
+    await update.message.reply_text("تمت الإضافة للمتجر")
 
-def main():
-    app = Application.builder().token(TOKEN).build()
+# ======================
+# تشغيل
+# ======================
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(buttons))
-    app.add_handler(MessageHandler(
-        filters.ALL,
+app = Application.builder().token(TOKEN).build()
+
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("addmedia", addmedia))
+
+app.add_handler(CallbackQueryHandler(store, pattern="store"))
+app.add_handler(CallbackQueryHandler(balance, pattern="balance"))
+app.add_handler(CallbackQueryHandler(earn, pattern="earn"))
+app.add_handler(CallbackQueryHandler(buy, pattern="buy_"))
+
+app.add_handler(
+    MessageHandler(
+        filters.PHOTO | filters.VIDEO | filters.AUDIO,
         receive_media
-    ))
+    )
+)
 
-    app.run_polling(close_loop=False)
-
-if __name__ == "__main__":
-    main()
+app.run_polling()
