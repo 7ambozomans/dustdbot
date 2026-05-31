@@ -3,9 +3,9 @@ import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
-TOKEN = "حط_توكن_البوت"
-ADMIN_ID = 123456789
-DELETE_AFTER = 60
+TOKEN = "8800609433:AAGxXFySv0pVYjAvKFqGxum7xL1aFt_acdE"
+ADMIN_ID = 5696379479
+DELETE_AFTER = 20
 
 conn = sqlite3.connect("bot.db", check_same_thread=False)
 db = conn.cursor()
