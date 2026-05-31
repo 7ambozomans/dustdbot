@@ -18,7 +18,7 @@ TOKEN = "8800609433:AAGxXFySv0pVYjAvKFqGxum7xL1aFt_acdE"
 ADMIN_ID = 5696379479
 
 # [] = بدون اشتراك إجباري
-FORCE_CHANNELS = [t.me/dustnum]
+FORCE_CHANNELS = [ t.me/dustnum ]
 
 DELETE_AFTER = 30
 REFERRAL_REWARD = 10
