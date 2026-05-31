@@ -14,7 +14,7 @@ from telegram.ext import (
 # الإعدادات
 # ======================
 
-TOKEN = "حط_توكن_البوت"
+TOKEN = "8800609433:AAGxXFySv0pVYjAvKFqGxum7xL1aFt_acdE"
 ADMIN_ID = 123456789
 
 FORCE_CHANNELS = ["@اسم_قناتك"]
