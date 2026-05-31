@@ -10,20 +10,22 @@ from telegram.ext import (
     filters
 )
 
-# ======================
+# ==========================
 # الإعدادات
-# ======================
+# ==========================
 
 TOKEN = "8800609433:AAGxXFySv0pVYjAvKFqGxum7xL1aFt_acdE"
-ADMIN_ID = 123456789
+ADMIN_ID = 5696379479
 
-FORCE_CHANNELS = ["@اسم_قناتك"]
-DELETE_AFTER = 60
+# [] = بدون اشتراك إجباري
+FORCE_CHANNELS = []
+
+DELETE_AFTER = 30
 REFERRAL_REWARD = 10
 
-# ======================
+# ==========================
 # قاعدة البيانات
-# ======================
+# ==========================
 
 conn = sqlite3.connect("bot.db", check_same_thread=False)
 db = conn.cursor()
@@ -46,46 +48,45 @@ CREATE TABLE IF NOT EXISTS media (
 
 conn.commit()
 
-# ======================
-# أدوات مساعدة
-# ======================
+waiting_price = {}
 
-async def check_subscription(bot, user_id):
-    for channel in FORCE_CHANNELS:
-        try:
-            member = await bot.get_chat_member(channel, user_id)
-            if member.status == "left":
-                return False
-        except:
-            return False
-    return True
-
+# ==========================
+# أدوات
+# ==========================
 
 def add_user(user_id):
-    db.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
+    db.execute(
+        "INSERT OR IGNORE INTO users (user_id) VALUES (?)",
+        (user_id,)
+    )
     conn.commit()
 
-
 def get_stars(user_id):
-    result = db.execute(
+    row = db.execute(
         "SELECT stars FROM users WHERE user_id=?",
         (user_id,)
     ).fetchone()
 
-    return result[0] if result else 0
+    return row[0] if row else 0
 
+async def check_subscription(bot, user_id):
+    if not FORCE_CHANNELS:
+        return True
 
-def add_stars(user_id, amount):
-    db.execute(
-        "UPDATE users SET stars = stars + ? WHERE user_id=?",
-        (amount, user_id)
-    )
-    conn.commit()
+    for channel in FORCE_CHANNELS:
+        try:
+            member = await bot.get_chat_member(channel, user_id)
 
+            if member.status in ["left", "kicked"]:
+                return False
+        except:
+            return False
 
-# ======================
-# /start
-# ======================
+    return True
+
+# ==========================
+# start
+# ==========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -93,14 +94,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not await check_subscription(context.bot, user_id):
         await update.message.reply_text(
-            "اشترك بالقناة أولاً ثم أعد /start"
+            "اشترك بالقنوات أولاً ثم أرسل /start"
         )
         return
 
     keyboard = [
         [InlineKeyboardButton("🛒 المتجر", callback_data="store")],
         [InlineKeyboardButton("⭐ رصيدي", callback_data="balance")],
-        [InlineKeyboardButton("🎁 كسب نجوم", callback_data="earn")]
+        [InlineKeyboardButton("🎁 رابط الدعوة", callback_data="invite")]
     ]
 
     await update.message.reply_text(
@@ -108,18 +109,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# ======================
-# عرض المتجر
-# ======================
+# ==========================
+# المتجر
+# ==========================
 
 async def store(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    items = db.execute("SELECT id, price FROM media").fetchall()
+    items = db.execute(
+        "SELECT id, price FROM media"
+    ).fetchall()
 
     if not items:
-        await query.message.reply_text("لا يوجد مقاطع حالياً")
+        await query.message.reply_text("لا يوجد منتجات")
         return
 
     buttons = []
@@ -127,7 +130,7 @@ async def store(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for item in items:
         buttons.append([
             InlineKeyboardButton(
-                f"شراء #{item[0]} ⭐{item[1]}",
+                f"شراء المنتج #{item[0]} ⭐{item[1]}",
                 callback_data=f"buy_{item[0]}"
             )
         ])
@@ -137,9 +140,9 @@ async def store(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
-# ======================
+# ==========================
 # شراء
-# ======================
+# ==========================
 
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -156,7 +159,7 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ).fetchone()
 
     if not media:
-        await query.message.reply_text("المقطع غير موجود")
+        await query.message.reply_text("غير موجود")
         return
 
     file_id, media_type, price = media
@@ -173,19 +176,27 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if media_type == "video":
         msg = await query.message.reply_video(file_id)
+
     elif media_type == "photo":
         msg = await query.message.reply_photo(file_id)
+
     else:
         msg = await query.message.reply_audio(file_id)
 
-    await query.message.reply_text("تم الإرسال وسيُحذف تلقائياً")
+    await query.message.reply_text(
+        "تم الإرسال وسيُحذف تلقائياً"
+    )
 
     await asyncio.sleep(DELETE_AFTER)
-    await msg.delete()
 
-# ======================
+    try:
+        await msg.delete()
+    except:
+        pass
+
+# ==========================
 # الرصيد
-# ======================
+# ==========================
 
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -193,48 +204,55 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     stars = get_stars(query.from_user.id)
 
-    await query.message.reply_text(f"رصيدك: ⭐ {stars}")
+    await query.message.reply_text(
+        f"رصيدك: ⭐ {stars}"
+    )
 
-# ======================
-# الربح
-# ======================
+# ==========================
+# الدعوات
+# ==========================
 
-async def earn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def invite(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    user_id = query.from_user.id
-
-    link = f"https://t.me/{context.bot.username}?start={user_id}"
+    link = f"https://t.me/{context.bot.username}?start={query.from_user.id}"
 
     await query.message.reply_text(
-        f"شارك رابطك واربح:\n{link}"
+        f"شارك الرابط:\n{link}"
     )
 
-# ======================
-# إضافة وسائط (للمطور)
-# ======================
-
-waiting_price = {}
+# ==========================
+# إضافة منتج
+# ==========================
 
 async def addmedia(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
 
     if len(context.args) != 1:
-        await update.message.reply_text("/addmedia السعر")
+        await update.message.reply_text(
+            "/addmedia السعر"
+        )
         return
 
     waiting_price[update.effective_user.id] = int(context.args[0])
 
     await update.message.reply_text(
-        "أرسل الآن الفيديو أو الصورة"
+        "أرسل الآن الفيديو أو الصورة أو الصوت"
     )
+
+# ==========================
+# استقبال الوسائط
+# ==========================
 
 async def receive_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    if user_id != ADMIN_ID or user_id not in waiting_price:
+    if user_id != ADMIN_ID:
+        return
+
+    if user_id not in waiting_price:
         return
 
     price = waiting_price[user_id]
@@ -242,12 +260,15 @@ async def receive_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.video:
         file_id = update.message.video.file_id
         media_type = "video"
+
     elif update.message.photo:
         file_id = update.message.photo[-1].file_id
         media_type = "photo"
+
     elif update.message.audio:
         file_id = update.message.audio.file_id
         media_type = "audio"
+
     else:
         await update.message.reply_text("نوع غير مدعوم")
         return
@@ -261,20 +282,49 @@ async def receive_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     del waiting_price[user_id]
 
-    await update.message.reply_text("تمت الإضافة للمتجر")
+    await update.message.reply_text(
+        "تمت إضافة المنتج"
+    )
 
-# ======================
+# ==========================
+# إضافة نجوم
+# ==========================
+
+async def addstars(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    if len(context.args) != 2:
+        await update.message.reply_text(
+            "/addstars user_id amount"
+        )
+        return
+
+    target = int(context.args[0])
+    amount = int(context.args[1])
+
+    db.execute(
+        "UPDATE users SET stars = stars + ? WHERE user_id=?",
+        (amount, target)
+    )
+
+    conn.commit()
+
+    await update.message.reply_text("تمت الإضافة")
+
+# ==========================
 # تشغيل
-# ======================
+# ==========================
 
 app = Application.builder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("addmedia", addmedia))
+app.add_handler(CommandHandler("addstars", addstars))
 
 app.add_handler(CallbackQueryHandler(store, pattern="store"))
 app.add_handler(CallbackQueryHandler(balance, pattern="balance"))
-app.add_handler(CallbackQueryHandler(earn, pattern="earn"))
+app.add_handler(CallbackQueryHandler(invite, pattern="invite"))
 app.add_handler(CallbackQueryHandler(buy, pattern="buy_"))
 
 app.add_handler(
@@ -283,5 +333,7 @@ app.add_handler(
         receive_media
     )
 )
+
+print("البوت يعمل...")
 
 app.run_polling()
