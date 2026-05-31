@@ -236,7 +236,7 @@ async def addmedia(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    waiting_price[update.effective_user.id] = int(context.args[0])
+   waiting_price[update.effective_user.id] = int(context.args[0])
 
     await update.message.reply_text(
         "أرسل الآن الفيديو أو الصورة أو الصوت"
